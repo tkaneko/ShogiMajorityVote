@@ -6,7 +6,7 @@ use IO::Handle;
 use IO::Socket;
 use IO::Select;
 my $options = {};
-getopts("h:p:c:n:f:l:v",$options);
+getopts("h:I:p:c:n:f:l:v",$options);
 ### options
 # -h hostname -p port number -c "command + args"
 my $hostname = $options->{h} || "localhost";
@@ -16,6 +16,7 @@ my $verbose = $options->{v};
 my $name = $options->{n};
 my $factor = $options->{f};
 my $logfile = $options->{l};
+my $initialize_string = $options->{I} || undef; # string sent to client before isready
 
 sub init_client ($);
 sub init_server ($$);
@@ -71,18 +72,18 @@ write_line($client, "quit");
 exit 0;
 
 ###
-sub initilize_board ($) {
+sub initialize_board ($) {
   my ($status) = @_;
   $status->{board} =
-    [ "KY", "KE", "GI", "KI", "OU", "KI", "GI", "KE", "KY",
-      "  ", "KA", "  ", "  ", "  ", "  ", "  ", "HI", "  ",
-      "FU", "FU", "FU", "FU", "FU", "FU", "FU", "FU", "FU",
-      "  ", "  ", "  ", "  ", "  ", "  ", "  ", "  ", "  ",
-      "  ", "  ", "  ", "  ", "  ", "  ", "  ", "  ", "  ",
-      "  ", "  ", "  ", "  ", "  ", "  ", "  ", "  ", "  ",
-      "FU", "FU", "FU", "FU", "FU", "FU", "FU", "FU", "FU",
-      "  ", "HI", "  ", "  ", "  ", "  ", "  ", "KA", "  ",
-      "KY", "KE", "GI", "KI", "OU", "KI", "GI", "KE", "KY", ];
+    [ "-KY", "-KE", "-GI", "-KI", "-OU", "-KI", "-GI", "-KE", "-KY",
+      "   ", "-KA", "   ", "   ", "   ", "   ", "   ", "-HI", "   ",
+      "-FU", "-FU", "-FU", "-FU", "-FU", "-FU", "-FU", "-FU", "-FU",
+      "   ", "   ", "   ", "   ", "   ", "   ", "   ", "   ", "   ",
+      "   ", "   ", "   ", "   ", "   ", "   ", "   ", "   ", "   ",
+      "   ", "   ", "   ", "   ", "   ", "   ", "   ", "   ", "   ",
+      "+FU", "+FU", "+FU", "+FU", "+FU", "+FU", "+FU", "+FU", "+FU",
+      "   ", "+HI", "   ", "   ", "   ", "   ", "   ", "+KA", "   ",
+      "+KY", "+KE", "+GI", "+KI", "+OU", "+KI", "+GI", "+KE", "+KY", "+" ];
   $status->{ptype} =
     { P=>"FU", L=>"KY", N=>"KE", S=>"GI", G=>"KI", B=>"KA", R=>"HI" };
   $status->{promotion} =
@@ -112,10 +113,10 @@ sub stop_and_wait_bestmove ($) {
 sub show ($) {
   my ($status) = @_;
   print "id = ".$status->{id}."\n";
-  print "moves = ".join(' ', @{$status->{moves}})."\n";
+  print "moves = ".join(' ', @{$status->{moves}})."\n" if ($status->{moves});
   foreach my $y (1..9) {
     foreach my $x (1..9) {
-      print ' '.$status->{board}->[($y-1)*9+9-$x];
+      print $status->{board}->[($y-1)*9+9-$x];
     }
     print "\n";
   }
@@ -123,19 +124,29 @@ sub show ($) {
 
 sub usi2csa ($$) {
   my ($status, $usi_string) = @_;
-  initilize_board($status) unless $status->{board};
+  initialize_board($status) unless $status->{board};
   return undef if ($usi_string =~ /^resign/); # client must not resign
   my @usi_move = split(//, $usi_string);
   if ($usi_move[1] eq '*') {
     my $ptype = $status->{ptype}->{$usi_move[0]};
-    return "00".$usi_move[2].(ord($usi_move[3])-ord('a')+1).$ptype;
+    my $to = $usi_move[2].(ord($usi_move[3])-ord('a')+1);
+    die "drop on piece $usi_string"
+      unless ($status->{board}->[board_index($to)] =~ /^\s+$/);
+    return "00".$to.$ptype;
   }
   my $promote = ($#usi_move == 4) && $usi_move[4] eq '+';
-  my $fromto = $usi_move[0].(ord($usi_move[1])-ord('a')+1)
-    .$usi_move[2].(ord($usi_move[3])-ord('a')+1);
-  my $ptype = $status->{board}->[$usi_move[0]-1+(ord($usi_move[1])-ord('a'))*9];
+  my ($from, $to) = ($usi_move[0].(ord($usi_move[1])-ord('a')+1),
+		     $usi_move[2].(ord($usi_move[3])-ord('a')+1));
+  my $turn = $status->{board}->[81];
+  die "turn inconsistent $turn $from ".$status->{board}->[board_index($from)]
+    unless ($turn eq substr($status->{board}->[board_index($from)],0,1));
+  die "turn inconsistent $turn $to ".$status->{board}->[board_index($to)]
+    if ($turn eq substr($status->{board}->[board_index($to)],0,1));
+  my $ptype = substr($status->{board}->[board_index($from)], 1);
+  die "invalid promotion $ptype"
+    if ($promote && !defined $status->{promotion}->{$ptype});
   $ptype = $status->{promotion}->{$ptype} if ($promote);
-  return $fromto.$ptype;
+  return $from.$to.$ptype;
 }
 
 sub csa2usi ($$$$) {
@@ -143,21 +154,38 @@ sub csa2usi ($$$$) {
   my ($usi, $promote) = (undef, undef);
   if ($from eq "00") {
     $usi = $status->{usitype}->{$ptype} . "*";
+    die "drop on piece $to".$status->{board}->[board_index($to)]
+      if ($status->{board}->[board_index($to)] !~ /^\s+$/);
   }
   else {
     $usi = substr($from,0,1).chr(ord(substr($from,1,1))-ord('1')+ord('a'));
-    $promote = $status->{board}->[board_index($from)] ne $ptype;
+    my $old_ptype = substr($status->{board}->[board_index($from)],1);
+    $promote = $old_ptype ne $ptype;
+    die "board inconsistent $old_ptype $ptype"
+      if ($old_ptype ne $ptype && $status->{promotion}->{$old_ptype} ne $ptype);
   }
   $usi .= substr($to,0,1).chr(ord(substr($to,1,1))-ord('1')+ord('a'));
   return $usi . ($promote ? '+' : '');
 }
-
+sub alt_turn ($) {
+  my ($turn) = @_;
+  die "turn? $turn" unless ($turn eq '+' || $turn eq '-');
+  return $turn eq '+' ? '-' : '+';
+}
 sub make_move ($$$$) {
   my ($status, $from, $to, $ptype) = @_;
   $status->{board} = [ @{$status->{prev}} ];
   my $usi = csa2usi($status, $from, $to, $ptype);
-  $status->{board}->[board_index($to)] = $ptype;
-  $status->{board}->[board_index($from)] = "  " if ($from ne "00");
+  my $turn = $status->{board}->[81];
+  $status->{board}->[81] = alt_turn($turn);
+  die "inconsintent turn $turn $to"
+    if (substr($status->{board}->[board_index($to)],0,1) eq $turn);
+  $status->{board}->[board_index($to)] = $turn.$ptype;
+  if ($from ne "00") {
+    die "inconsintent turn $turn $from $to $ptype"
+      if (substr($status->{board}->[board_index($from)],0,1) ne $turn);
+    $status->{board}->[board_index($from)] = "   ";
+  }
   push(@{$status->{moves}}, $usi);
 }
 
@@ -172,7 +200,7 @@ sub start_search ($) {
 
 sub handle_server_message ($$) {
   my ($line, $status) = @_;
-  initilize_board($status) unless $status->{board};
+  initialize_board($status) unless $status->{board};
   if ($line =~ /(move|alter)\s+([0-9]{2})([0-9]{2})([A-Z]{2})\s+(\d+)/) {
     my ($command, $from, $to, $ptype, $new_id) = ($1, $2, $3, $4, $5);
     stop_and_wait_bestmove($status);
@@ -298,6 +326,7 @@ sub init_client ($)
   $client->{pid} = open2($client->{reader}, $client->{writer}, $command)
     || die "command execution failed";
   write_line($client, "usi");
+  write_line($client, $initialize_string) if ($initialize_string);
   write_line($client, "isready");
   while (my $line = read_line($client)) {
     $line =~ s/\r?\n$//;
@@ -323,15 +352,17 @@ sub unittest () {
   valid_usi_move("7g7F") && die "unittest";
 
   my $status = { id=>0 };
-  initilize_board($status) unless $status->{board};
-  usi2csa($status, "7g7f")  eq "7776FU" || die "unittest";
-  usi2csa($status, "R*4c")  eq "0043HI" || die "unittest";
-  usi2csa($status, "8h2b+") eq "8822UM" || die "unittest";
-  csa2usi($status, "77","76","FU") eq "7g7f"  || die "unittest";
-  csa2usi($status, "88","22","UM") eq "8h2b+" || die "unittest";
-  csa2usi($status, "00","43","HI") eq "R*4c"  || die "unittest";
+  initialize_board($status) unless $status->{board};
+  ($status->{board}->[81] eq '+') || die "unittest";
+  (usi2csa($status, "7g7f")  eq "7776FU") || die "unittest";
+  (usi2csa($status, "R*4e")  eq "0045HI") || die "unittest";
+  (usi2csa($status, "8h2b+") eq "8822UM") || die "unittest";
+  (csa2usi($status, "77","76","FU") eq "7g7f")  || die "unittest";
+  (csa2usi($status, "88","22","UM") eq "8h2b+") || die "unittest";
+  (csa2usi($status, "00","45","HI") eq "R*4e")  || die "unittest";
   $status->{prev} = [ @{$status->{board}} ];
   make_move($status, "77", "76", "FU");
+  ($status->{board}->[81] eq '-') || die "unittest";
   # show($status);
 }
 
