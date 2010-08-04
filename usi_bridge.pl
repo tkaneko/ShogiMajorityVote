@@ -6,7 +6,7 @@ use IO::Handle;
 use IO::Socket;
 use IO::Select;
 my $options = {};
-getopts("h:I:p:c:n:f:l:v",$options);
+getopts("h:I:p:c:n:f:l:s:v",$options);
 ### options
 # -h hostname -p port number -c "command + args"
 my $hostname = $options->{h} || "localhost";
@@ -16,6 +16,7 @@ my $verbose = $options->{v};
 my $name = $options->{n};
 my $factor = $options->{f};
 my $logfile = $options->{l};
+my $stop_interval = $options->{s} || 0;
 my $initialize_string = $options->{I} || undef; # string sent to client before isready
 
 sub init_client ($);
@@ -29,6 +30,7 @@ sub unittest ();
 
 &unittest();
 die "factor is not a number" if (defined $factor && $factor !~ /^-?[0-9.]+$/);
+die "stop_interval is not an integer" if ($stop_interval !~ /^[0-9]+$/);
 my $log_handle = undef;
 if ($logfile) {
   open($log_handle, "> $logfile") || die $!;
@@ -103,9 +105,20 @@ sub board_index ($) {
 sub stop_and_wait_bestmove ($) {
   my ($status) = @_;
   return if (defined $status->{bestmove} && $status->{bestmove} == $status->{id});
+  my $now = time;
+  if ($status->{lastgo}+$stop_interval > $now) {
+    warn "sleep $stop_interval before stop";
+    sleep($status->{lastgo}+$stop_interval - $now);
+  }
   write_line($status->{client}, "stop");
+  my $stop_sent = time;
   while (my $line=read_line($status->{client})) {
     last if $line =~ /^bestmove/;
+    if (time > $stop_sent + 10) {
+      warn "try stop again\n";
+      write_line($status->{client}, "stop");
+      $stop_sent = time;
+    }
   }
   $status->{bestmove} = $status->{id};
 }
@@ -196,6 +209,7 @@ sub start_search ($) {
     if (@{$status->{moves}}+0);
   write_line($status->{client}, $position);
   write_line($status->{client}, "go infinite");
+  $status->{lastgo} = time;
 }
 
 sub handle_server_message ($$) {
