@@ -138,7 +138,8 @@ sub show ($) {
 sub usi2csa ($$) {
   my ($status, $usi_string) = @_;
   initialize_board($status) unless $status->{board};
-  return undef if ($usi_string =~ /^resign/); # client must not resign
+  return '%TORYO' if ($usi_string =~ /^resign/);
+  # return undef if ($usi_string =~ /^resign/); # client must not resign
   my @usi_move = split(//, $usi_string);
   if ($usi_move[1] eq '*') {
     my $ptype = $status->{ptype}->{$usi_move[0]};
@@ -285,7 +286,10 @@ sub handle_client_message ($$) {
     $status->{score} = $score if ($move && defined $score);
     $move = usi2csa($status, $move) if $move;
     my $message = "";
-    $message .= " move=".$move if $move;
+    if ($move) {
+      $message .= " move=".$move;
+      $nodes = 1 unless $nodes;
+    }
     # $message .= " v=".$score.'e' if $score;
     $message .= " n=".$nodes if $nodes;
     write_line($status->{server}, "pid=".$status->{id}.$message) if $message;

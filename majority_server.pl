@@ -182,7 +182,7 @@ sub parse_smsg ($$$$) {
 	return 1;
     }
 
-    unless ( $line =~ /^([+-])(\d\d\d\d\w\w),T(\d+)/ ) { die "$!"; }
+    unless ( $line =~ /^([+-])(\d\d\d\d\w\w),T(\d+)/ ) { die "$! $line"; }
 
     my ( $color, $move, $sec ) = ( $1, $2, $3 );
 
@@ -298,6 +298,8 @@ sub parse_cmsg ($$$$) {
     if ( $line =~ /confident/ )            { $confident = 1; }
     if ( $line =~ /book/ )                 { $book      = 1; }
     if ( $line =~ /move=(\d\d\d\d\w\w)/ )  { $move      = $1; }
+    if ( $line =~ /move=(%TORYO)/ && $$ref_status{phase} != phase_puzzling)
+      { $move      = $1; }
     if ( $line =~ /n=(\d+)/ )              { $nodes     = $1; }
     if ( $line =~ / d=(\d+)/ )             { $depth     = $1; }
     
@@ -489,7 +491,10 @@ sub move_selection ($$$$) {
 	
     # Make a move, and start puzzling.
     $$ref_status{pid} += 1;
-    out_csa $ref_status, $sckt_csa, $fh_log, "$$ref_status{color}$move_ready";
+    my $csa_move = (($move_ready !~ /^%/) ? $$ref_status{color} : "").$move_ready;
+    out_csa $ref_status, $sckt_csa, $fh_log, $csa_move;
+    return if ($move_ready =~ /^%/);
+
     out_clients( $ref_sckt_clients, $fh_log,
 		 "move $move_ready $$ref_status{pid}" );
     out_log $fh_log, "pid is set to $$ref_status{pid}.";
