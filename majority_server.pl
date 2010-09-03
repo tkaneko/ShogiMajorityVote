@@ -57,6 +57,7 @@ sub keep_alive      () { 180.0 }
 		       sec_limit        => 0,
 		       sec_limit_up     => 3,
 		       time_response    => 0.2,
+		       time_stable_min  => 2.0,
 		       buf_csa          => "",
 		       resign_threshold => -1500 );
 
@@ -182,7 +183,7 @@ sub parse_smsg ($$$$) {
 	return 1;
     }
 
-    unless ( $line =~ /^([+-])(\d\d\d\d\w\w),T(\d+)/ ) { die "$! $line"; }
+    unless ( $line =~ /^([+-])(\d\d\d\d\w\w),T(\d+)/ ) { die "$!"; }
 
     my ( $color, $move, $sec ) = ( $1, $2, $3 );
 
@@ -283,25 +284,35 @@ sub parse_cmsg ($$$$) {
     }
 
     unless ( $line =~ /pid=(\d+)/ ) {
-	warn "Invalid message from $$ref{id}: $line\n";
+	warn "pid from $$ref{id} is no match: $line\n";
 	return;
     }
 
     if ( $1 != $$ref_status{pid} ) { return; }
     
     my $move      = undef;
-    my $confident = undef;
     my $book      = undef;
     my $nodes     = undef;
-    my $depth     = undef;
+    my $stable    = undef;
+    my $final     = undef;
+    my $confident = undef;
 
-    if ( $line =~ /confident/ )            { $confident = 1; }
-    if ( $line =~ /book/ )                 { $book      = 1; }
-    if ( $line =~ /move=(\d\d\d\d\w\w)/ )  { $move      = $1; }
-    if ( $line =~ /move=(%TORYO)/
-	 and $$ref_status{phase} != phase_puzzling ) { $move = $1; }
-    if ( $line =~ /n=(\d+)/ )              { $nodes     = $1; }
-    if ( $line =~ / d=(\d+)/ )             { $depth     = $1; }
+    if ( $line =~ /book/ )                   { $book      = 1; }
+    if ( $line =~ /move=(\d\d\d\d\w\w)/ )    { $move      = $1; }
+    if ( $line =~ /n=(\d+)/ )                { $nodes     = $1; }
+    if ( $line =~ /stable/ ) {
+	if ( defined $$ref{have_stable} )    { $stable    = 1; }
+	else { warn "Invalid message 'stable' from $$ref{id}: $line\n";	}
+    }
+    if ( $line =~ /final/ ) {
+	if ( defined $$ref{have_final} )     { $final     = 1; }
+	else { warn "Invalid message 'final' from $$ref{id}: $line\n";	}
+    }
+    if ( $line =~ /confident/ ) {
+	if ( defined $$ref{have_confident} ) { $confident = 1; }
+	else { warn "Invalid message 'confident' from $$ref{id}: $line\n"; }
+    }
+    
     
     if ( defined $move and defined $book ) {
 
@@ -309,27 +320,35 @@ sub parse_cmsg ($$$$) {
 	$$ref{move}      = $move;
 	$$ref{nodes}     = 0.0;
 	$$ref{spent}     = $time_think;
-
+	
     } elsif ( defined $move and defined $nodes ) {
 
+	$$ref{final}     = $final;
+	$$ref{stable}    = $stable;
 	$$ref{confident} = $confident;
-	$$ref{book}      = $book;
 	$$ref{move}      = $move;
 	$$ref{nodes}     = $nodes;
 	$$ref{spent}     = $time_think;
 
+    } elsif ( defined $final and defined $$ref{move} ) {
+
+	$$ref{final}     = $final;
+	$$ref{spent}     = $time_think;
+
+    } elsif ( defined $stable and defined $$ref{move} ) {
+
+	$$ref{stable}    = $stable;
+	$$ref{spent}     = $time_think;
+
     } elsif ( defined $confident and defined $$ref{move} ) {
 
-	$$ref{confident} = 1;
+	$$ref{confident} = $confident;
+	$$ref{spent}     = $time_think;
 
     } elsif ( defined $nodes and defined $$ref{move} ) {
 
-	$$ref{nodes} = $nodes;
-	$$ref{spent} = $time_think;
-
-    } elsif ( defined $depth and defined $$ref{move} ) {
-
-	$$ref{depth} = $depth;
+	$$ref{nodes}     = $nodes;
+	$$ref{spent}     = $time_think;
 
     } else { warn "Invalid message from $$ref{id}: $line\n"; }
 
@@ -372,6 +391,9 @@ sub move_selection ($$$$) {
     if ( $$ref_status{phase} == phase_pondering ) { return; }
 
 
+    my $time_turn  = $$ref_status{time} - $$ref_status{start_turn};
+    my $time_think = $$ref_status{time} - $$ref_status{start_think};
+
     # see if there are any confident decisions or not.
     foreach my $sckt ( @$ref_sckt_clients ) {
 	    
@@ -384,9 +406,6 @@ sub move_selection ($$$$) {
 	    last;
 	}
     }
-
-    my $time_turn  = $$ref_status{time} - $$ref_status{start_turn};
-    my $time_think = $$ref_status{time} - $$ref_status{start_think};
 
     # Find the best move from the ballot box of book.
     if ( not $move_ready
@@ -420,6 +439,7 @@ sub move_selection ($$$$) {
 	my $condition   = 0;
 	my $sec_elapsed;
 
+	# check time
 	if ( $$ref_status{phase} == phase_thinking
 	     and ( $$ref_status{sec_mytime}
 		   + int( $$ref_status{sec_fine} ) + 1.0
@@ -456,6 +476,48 @@ sub move_selection ($$$$) {
 	    out_log $fh_log, "Difficult Move";
 	    $condition = 1;
 	}
+
+	# check stable
+	if ( not $condition
+	     and $$ref_status{time_stable_min} < $time_think + $$ref_status{time_response} ) {
+
+	    my $nhave_stable = 0;
+	    my $nstable      = 0;
+
+	    foreach my $sckt ( @$ref_sckt_clients ) {
+	    
+		my $ref = $$ref_status{$sckt};
+
+		unless ( defined $$ref{have_stable} ) { next; }
+		
+		$nhave_stable += $$ref{factor};
+		if ( defined $$ref{stable} ) { $nstable += $$ref{factor}; }
+	    }
+
+	    if ( $nhave_stable < $nstable * 2 ) { $condition = 1; }
+	}
+
+	# see if there is any final decisions or not.
+	unless ( $condition ) {
+
+	    my %nfinal;
+	    my $nhave_final = 0;
+
+	    foreach my $sckt ( @$ref_sckt_clients ) {
+
+		my $ref = $$ref_status{$sckt};
+
+		unless ( defined $$ref{have_final} ) { next; }
+
+		$nhave_final += $$ref{factor};
+
+		if ( defined $$ref{final} ) { $nfinal{$$ref{move}} += $$ref{factor}; }
+	    }
+
+	    my $max = ( sort { $b <=> $a } values %nfinal )[0];
+
+	    if ( defined $max and $nhave_final < $max * 2 ) { $condition = 1; }
+	}
 	
 	if ( $condition ) {
 	    
@@ -491,14 +553,9 @@ sub move_selection ($$$$) {
 	
     # Make a move, and start puzzling.
     $$ref_status{pid} += 1;
-    my $csa_move = (($move_ready !~ /^%/) ? $$ref_status{color} : "").$move_ready;
-    out_csa $ref_status, $sckt_csa, $fh_log, $csa_move;
-
-    if ( $move_ready !~ /^%/ ) {
-	out_clients( $ref_sckt_clients, $fh_log,
-		     "move $move_ready $$ref_status{pid}" );
-    }
-    
+    out_csa $ref_status, $sckt_csa, $fh_log, "$$ref_status{color}$move_ready";
+    out_clients( $ref_sckt_clients, $fh_log,
+		 "move $move_ready $$ref_status{pid}" );
     out_log $fh_log, "pid is set to $$ref_status{pid}.";
     out_log $fh_log, sprintf( "time-searched: %7.2fs", $time_think );
     out_log $fh_log, sprintf( "time-elapsed:  %7.2fs", $time_turn );
@@ -609,7 +666,7 @@ sub clean_up_moves ($$) {
     delete $$ref_status{boxes_book};
     foreach my $sckt ( @$ref_sckt_clients ) {
 	my $ref = $$ref_status{$sckt};
-	delete @$ref{ qw(move confident book idling depth) };
+	delete @$ref{ qw(move book stable final confident) };
     }
 }
 
@@ -641,10 +698,13 @@ sub print_opinions ($$$) {
 	out_log $fh_log, "sum = $sum";
 	foreach my $op ( @ops_ ) {
 	    my $nps = $$op{nodes} / $$op{spent} / 1000.0;
-	    
-	    out_log $fh_log, sprintf( "  %.2f %s nps=%6.1fK %6.1fs %s",
-				      $$op{factor}, $$op{move}, $nps,
-				      $$op{spent}, $$op{id} );
+	    my $str = sprintf( "  %.2f %s nps=%6.1fK %6.1fs %s",
+			       $$op{factor}, $$op{move}, $nps,
+			       $$op{spent}, $$op{id} );
+
+	    if ( defined $$op{stable} ) { $str .= " stable"; }
+	    if ( defined $$op{final} )  { $str .= " final"; }
+	    out_log $fh_log, $str;
 	}
     }
 }
@@ -705,10 +765,15 @@ sub open_clients ($) {
 	out_client $sckt, "idle";
 
 	$line =~ s/\r?\n$//;
-
+	
 	my ( $id, $factor ) = split " ", "$line 1.0";
-
 	$$ref_status{$sckt} = { id => $id, factor => $factor, buf => "" };
+
+	$line =~ /stable/    and ${$$ref_status{$sckt}}{have_stable}    = 1;
+	$line =~ /final/     and ${$$ref_status{$sckt}}{have_final}     = 1;
+	$line =~ /confident/ and ${$$ref_status{$sckt}}{have_confident} = 1;
+
+
 	print "  $line is accepted\n";
     }
 
