@@ -6,7 +6,7 @@ use IO::Handle;
 use IO::Socket;
 use IO::Select;
 my $options = {};
-getopts("h:I:p:c:n:f:l:s:v",$options);
+getopts("h:I:p:c:n:f:l:s:rv",$options);
 ### options
 # -h hostname -p port number -c "command + args"
 my $hostname = $options->{h} || "localhost";
@@ -14,10 +14,11 @@ my $port = $options->{p} || 4082;
 my $command = $options->{c} || die "command not specified";
 my $verbose = $options->{v};
 my $name = $options->{n};
-my $factor = $options->{f};
+my $factor = $options->{f} || 1;
 my $logfile = $options->{l};
 my $stop_interval = $options->{s} || 0;
 my $initialize_string = $options->{I} || undef; # string sent to client before isready
+my $enable_resign = $options->{r};
 
 sub init_client ($);
 sub init_server ($$);
@@ -29,7 +30,7 @@ sub start_search ($);
 sub unittest ();
 
 &unittest();
-die "factor is not a number" if (defined $factor && $factor !~ /^-?[0-9.]+$/);
+die "factor is not a number" if ($factor !~ /^-?[0-9.]+$/);
 die "stop_interval is not an integer" if ($stop_interval !~ /^[0-9]+$/);
 my $log_handle = undef;
 if ($logfile) {
@@ -45,17 +46,23 @@ my $server = init_server($hostname, $port);
 print STDERR "client is $client->{id}\n";
 my $client_name = $name || $client->{id};
 $client_name =~ s/ /_/g;
-$client_name .= " ".$factor if (defined $factor && $factor =~ /^[0-9.-]+$/);
+$client_name .= " ".$factor." final";
 write_line($server, $client_name);
 
 ### new game
 while (1) {
   my $status = { id=>0, server=>$server, client=>$client, moves=>[] };
-  my ($sec,$min,$hour,$mday,$mon,$year) = localtime(time);
+  my $now = time;
+  my ($sec,$min,$hour,$mday,$mon,$year) = localtime($now);
   printf STDERR "\nnew game %d-%02d-%02d %02d:%02d:%02d\n\n",
     $year,$mon,$mday,$hour,$min,$sec;
-  while (my $line = read_line($server) || die "server closed") {
-    last if $line =~ /^new$/;
+  while (1) {
+    my $line = read_line($server,90);
+    last if $line && $line =~ /^new$/;
+    unless ($line && $now+90 < time) {
+      write_line($server, "");
+      $now = time;
+    }
   }
   write_line($client, "usinewgame");
   start_search($status);
@@ -138,8 +145,8 @@ sub show ($) {
 sub usi2csa ($$) {
   my ($status, $usi_string) = @_;
   initialize_board($status) unless $status->{board};
-  return '%TORYO' if ($usi_string =~ /^resign/);
-  # return undef if ($usi_string =~ /^resign/); # client must not resign
+  return '%TORYO' if ($usi_string =~ /^resign/ && $enable_resign);
+  return undef if ($usi_string =~ /^resign/); # client must not resign
   my @usi_move = split(//, $usi_string);
   if ($usi_move[1] eq '*') {
     my $ptype = $status->{ptype}->{$usi_move[0]};
@@ -211,6 +218,7 @@ sub start_search ($) {
   write_line($status->{client}, $position);
   write_line($status->{client}, "go infinite");
   $status->{lastgo} = time;
+  $status->{lastnodes} = 1;
 }
 
 sub handle_server_message ($$) {
@@ -285,13 +293,11 @@ sub handle_client_message ($$) {
     $status->{pv} = [ $move, @pv ] if ($move);
     $status->{score} = $score if ($move && defined $score);
     $move = usi2csa($status, $move) if $move;
+    $status->{lastnodes} = $nodes if $nodes;
     my $message = "";
-    if ($move) {
-      $message .= " move=".$move;
-      $nodes = 1 unless $nodes;
-    }
+    $message .= " move=".$move if ($move);
     # $message .= " v=".$score.'e' if $score;
-    $message .= " n=".$nodes if $nodes;
+    $message .= " n=".$status->{lastnodes} if $status->{lastnodes};
     write_line($status->{server}, "pid=".$status->{id}.$message) if $message;
     return;
   }
@@ -299,12 +305,9 @@ sub handle_client_message ($$) {
     my $move = $1;
     die "unknown syntax $line" unless (valid_usi_move($move));
     $status->{bestmove} = $status->{id};
-    if (defined $status->{haspv} && $status->{haspv} == $status->{id}) {
-	warn "a client should not return bestmove until the server sent stop\n";
-    } else {
-	my $csa = usi2csa($status, $move);
-	write_line($status->{server}, "pid=".$status->{id}." move=".$csa." book") if $move;
-    }
+    my $csa = usi2csa($status, $move);
+    write_line($status->{server}, "pid=".$status->{id}." move=".$csa
+	       ." n=".$status->{lastnodes}." final") if $csa;
   }
   else {
     warn "unknown message\n";
