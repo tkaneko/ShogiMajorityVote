@@ -41,39 +41,51 @@ if ($logfile) {
 
 $| = 1;
 ### initialize
+sub connection_closed () { return ":connection closed:"; }
 my $client = init_client($command);
-my $server = init_server($hostname, $port);
 print STDERR "client is $client->{id}\n";
 my $client_name = $name || $client->{id};
 $client_name =~ s/ /_/g;
 $client_name .= " ".$factor." final";
-write_line($server, $client_name);
 
-### new game
-while (1) {
-  my $status = { id=>0, server=>$server, client=>$client, moves=>[] };
-  my $now = time;
-  my ($sec,$min,$hour,$mday,$mon,$year) = localtime($now);
-  printf STDERR "\nnew game %d-%02d-%02d %02d:%02d:%02d\n\n",
-    $year,$mon,$mday,$hour,$min,$sec;
+CONNECT: while (1) {
+  my $server = init_server($hostname, $port);
+  write_line($server, $client_name);
+  ### new game
   while (1) {
-    my $line = read_line($server,90);
-    last if $line && $line =~ /^new$/;
-    unless ($line && $now+90 < time) {
-      write_line($server, "");
-      $now = time;
+    my $status = { id=>0, server=>$server, client=>$client, moves=>[] };
+    my $now = time;
+    my ($sec,$min,$hour,$mday,$mon,$year) = localtime($now);
+    printf STDERR "\nnew game %d-%02d-%02d %02d:%02d:%02d\n\n",
+      1900+$year,$mon+1,$mday,$hour,$min,$sec;
+    while (1) {
+      my $line = read_line($server,90);
+      unless ($line) {
+	write_line($server, "");
+	$now = time;
+	next;
+      }
+      last if $line =~ /^new$/;
+      if ($line eq connection_closed) {
+	warn "server down while waiting new game";
+	next CONNECT;
+      }
     }
-  }
-  write_line($client, "usinewgame");
-  start_search($status);
-  while (1) {
-    if (my $line = read_line($server, 0.1)) {
-      handle_server_message($line, $status);
-      last if ($line =~ /^idle/);
-      next;
-    }
-    if (my $line = read_line($client, 0.1)) {
-      handle_client_message($line, $status);
+    write_line($client, "usinewgame");
+    start_search($status);
+    while (1) {
+      if (my $line = read_line($server, 0.1)) {
+	handle_server_message($line, $status);
+	last if ($line =~ /^idle/);
+	if ($line eq connection_closed) {
+	  warn "server down in GAME";
+	  next CONNECT;
+	}
+	next;
+      }
+      if (my $line = read_line($client, 0.1)) {
+	handle_client_message($line, $status);
+      }
     }
   }
 }
@@ -122,7 +134,7 @@ sub stop_and_wait_bestmove ($) {
   while (my $line=read_line($status->{client})) {
     last if $line =~ /^bestmove/;
     if (time > $stop_sent + 10) {
-      warn "try stop again\n";
+      warn "try stop again";
       write_line($status->{client}, "stop");
       $stop_sent = time;
     }
@@ -239,11 +251,11 @@ sub handle_server_message ($$) {
     print $log_handle "$line\n" if ($log_handle);
     return;
   }
-  if ($line =~ /^idle/) {
+  if ($line =~ /^idle/ || $line eq connection_closed) {
     stop_and_wait_bestmove($status);
     return;
   }
-  die $line;
+  die "invalid server message ".$line;
 }
 
 sub valid_usi_move ($) {
@@ -310,7 +322,7 @@ sub handle_client_message ($$) {
 	       ." n=".$status->{lastnodes}." final") if $csa;
   }
   else {
-    warn "unknown message\n";
+    warn "unknown message $line";
   }
 }
 
@@ -322,9 +334,13 @@ sub read_line ($@) {
     return undef unless $selector->can_read($timeout);
   }
   my ($line, $char);
-  while ($in->sysread($char, 1) == 1) {
-    $line .= $char;
-    last if ($char eq "\n");
+  return connection_closed unless $in->sysread($char, 1);
+  $line = $char;
+  if ($char ne "\n") {
+    while ($in->sysread($char, 1) == 1) {
+      $line .= $char;
+      last if ($char eq "\n");
+    }
   }
   $line =~ s/\r?\n$//;
   print STDERR substr($object->{type}, 0, 1), "< $line\n"
@@ -361,8 +377,17 @@ sub init_server ($$) {
   my ($hostname, $port) = @_;
   my $server = { type=>"Server" };
   print STDERR "connect to $hostname:$port\n";
-  $server->{socket} = new IO::Socket::INET
-    (PeerAddr=>$hostname, PeerPort=>$port, Proto=>'tcp') || die "socket $!";
+  while (1) {
+    eval {
+      $server->{socket} = new IO::Socket::INET
+	(PeerAddr=>$hostname, PeerPort=>$port, Proto=>'tcp');
+      die "socket $!" unless $server->{socket};
+    };
+    last unless ($@);
+    warn $@;
+    print STDERR "try again in 10s.\n";
+    sleep 10;
+  }
   $server->{writer} = $server->{reader} = $server->{socket};
   return $server;
 }
