@@ -299,6 +299,8 @@ sub parse_cmsg ($$$$) {
 
     if ( $line =~ /book/ )                   { $book      = 1; }
     if ( $line =~ /move=(\d\d\d\d\w\w)/ )    { $move      = $1; }
+    if ( $line =~ /move=(%TORYO)/
+	 and $$ref_status{phase} != phase_puzzling ) { $move = $1; }
     if ( $line =~ /n=(\d+)/ )                { $nodes     = $1; }
     if ( $line =~ /stable/ ) {
 	if ( defined $$ref{have_stable} )    { $stable    = 1; }
@@ -553,9 +555,12 @@ sub move_selection ($$$$) {
 	
     # Make a move, and start puzzling.
     $$ref_status{pid} += 1;
-    out_csa $ref_status, $sckt_csa, $fh_log, "$$ref_status{color}$move_ready";
-    out_clients( $ref_sckt_clients, $fh_log,
-		 "move $move_ready $$ref_status{pid}" );
+    my $csa_move = (($move_ready !~ /^%/) ? $$ref_status{color} : "").$move_ready;
+    out_csa $ref_status, $sckt_csa, $fh_log, $csa_move;
+    if ( $move_ready !~ /^%/ ) {
+      out_clients( $ref_sckt_clients, $fh_log,
+		   "move $move_ready $$ref_status{pid}" );
+    }
     out_log $fh_log, "pid is set to $$ref_status{pid}.";
     out_log $fh_log, sprintf( "time-searched: %7.2fs", $time_think );
     out_log $fh_log, sprintf( "time-elapsed:  %7.2fs", $time_turn );
