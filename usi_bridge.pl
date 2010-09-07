@@ -301,16 +301,22 @@ sub handle_client_message ($$) {
     my $score = ($line =~ /\s+score cp\s+(-?[0-9.]+)/) && $1;
     my $nodes = ($line =~ /\s+nodes\s+([0-9.]+)/) && $1;
     my ($move, @pv) = ($line =~ /\s+pv\s+(.+)/) && split(/\s+/, $1);
+    $move = undef if ($move =~ /resign/); # ignore resign unless final decision
     $status->{haspv} = $status->{id} if ($move);
     $status->{pv} = [ $move, @pv ] if ($move);
     $status->{score} = $score if ($move && defined $score);
     $move = usi2csa($status, $move) if $move;
-    $status->{lastnodes} = $nodes if $nodes;
     my $message = "";
     $message .= " move=".$move if ($move);
     # $message .= " v=".$score.'e' if $score;
-    $message .= " n=".$status->{lastnodes} if $status->{lastnodes};
-    write_line($status->{server}, "pid=".$status->{id}.$message) if $message;
+    if ($nodes) {
+      $message .= " n=".$nodes;
+      $status->{lastnodes} = $nodes;
+    }
+    if ($message && $status->{haspv} && $status->{haspv} == $status->{id}) {
+      $message .= " n=".$status->{lastnodes} if !$nodes;
+      write_line($status->{server}, "pid=".$status->{id}.$message);
+    }
     return;
   }
   elsif ($line =~ /^bestmove\s+(.+)/) {
