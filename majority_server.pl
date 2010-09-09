@@ -53,13 +53,12 @@ sub keep_alive      () { 180.0 }
 		       csa_host         => 'localhost',
 		       csa_port         => 4081,
 		       csa_id           => 'majority_vote',
-		       csa_pw           => 'majority_vote',
+		       csa_pw           => 'hoge-500-3',
 		       sec_limit        => 0,
 		       sec_limit_up     => 3,
 		       time_response    => 0.2,
 		       time_stable_min  => 2.0,
-		       buf_csa          => "",
-		       resign_threshold => -1500 );
+		       buf_csa          => "" );
 
     # parse the command-line options
     GetOptions( \%status,
@@ -71,7 +70,8 @@ sub keep_alive      () { 180.0 }
 		'csa_pw=s',
 		'sec_limit=i',
 		'sec_limit_up=i',
-		'time_response=f' ) or die "$!";
+		'time_response=f',
+		'time_stable_min=f' ) or die "$!";
 
     my $ref_sckt_clients = open_clients \%status;
     while ( 1 ) {
@@ -291,13 +291,11 @@ sub parse_cmsg ($$$$) {
     if ( $1 != $$ref_status{pid} ) { return; }
     
     my $move      = undef;
-    my $book      = undef;
     my $nodes     = undef;
     my $stable    = undef;
     my $final     = undef;
     my $confident = undef;
 
-    if ( $line =~ /book/ )                   { $book      = 1; }
     if ( $line =~ /move=(\d\d\d\d\w\w)/ )    { $move      = $1; }
     if ( $line =~ /move=(%TORYO)/
 	 and $$ref_status{phase} != phase_puzzling ) { $move = $1; }
@@ -316,14 +314,7 @@ sub parse_cmsg ($$$$) {
     }
     
     
-    if ( defined $move and defined $book ) {
-
-	$$ref{book}      = $book;
-	$$ref{move}      = $move;
-	$$ref{nodes}     = 0.0;
-	$$ref{spent}     = $time_think;
-	
-    } elsif ( defined $move and defined $nodes ) {
+    if ( defined $move and defined $nodes ) {
 
 	$$ref{final}     = $final;
 	$$ref{stable}    = $stable;
@@ -365,8 +356,6 @@ sub parse_cmsg ($$$$) {
 
 	unless ( defined $$ref{move} ) { next; }
 
-	if ( defined $book and not defined $$ref{book} ) { next; }
-
 	$nvalid += 1;
 	for ( $i = 0; $i < @boxes; $i++ ) {
 	    my $op = ${$boxes[$i]}[1];
@@ -380,9 +369,8 @@ sub parse_cmsg ($$$$) {
     # Sort opinions by factor
     @boxes = sort { $$b[0] <=> $$a[0] } @boxes;
 
-    my $box_name = ( defined $book ) ? 'boxes_book' : 'boxes';
-    $$ref_status{$box_name} = \@boxes;
-    $$ref_status{nvalid}    = $nvalid;
+    $$ref_status{boxes}  = \@boxes;
+    $$ref_status{nvalid} = $nvalid;
 }
 
 
@@ -409,24 +397,6 @@ sub move_selection ($$$$) {
 	}
     }
 
-    # Find the best move from the ballot box of book.
-    if ( not $move_ready
-	 and 2.0 < $time_think + $$ref_status{time_response}
-	 and defined $$ref_status{boxes_book}
-	 and defined ${${$$ref_status{boxes_book}}[0]}[0] ) {
-	
-	my $ref_boxes = $$ref_status{boxes_book};
-	my $ops       = $$ref_boxes[0];
-	my $op        = $$ops[1];
-	my $nop       = @$ops;
-	
-	out_log $fh_log, "Book Move";
-	out_log $fh_log, "The best move is ${$op}{move}.";
-	print_opinions $$ref_status{boxes_book}, undef, $fh_log;
-	
-	$move_ready = ${$op}{move};
-    }
-
 
     # Find the best move from the ballot box.
     if ( not $move_ready
@@ -436,7 +406,7 @@ sub move_selection ($$$$) {
 	my $ref_boxes   = $$ref_status{boxes};
 	my $ops         = $$ref_boxes[0];
 	my $op          = $$ops[1];
-	my $nop         = @$ops;
+	my $nop         = @$ops - 1; # minus 1 because 1st element is factor
 	my $nvalid      = $$ref_status{nvalid};
 	my $condition   = 0;
 	my $sec_elapsed;
@@ -503,7 +473,7 @@ sub move_selection ($$$$) {
 	unless ( $condition ) {
 
 	    my %nfinal;
-	    my $nhave_final = 0;
+	    my $not_final   = 0;
 
 	    foreach my $sckt ( @$ref_sckt_clients ) {
 
@@ -511,14 +481,17 @@ sub move_selection ($$$$) {
 
 		unless ( defined $$ref{have_final} ) { next; }
 
-		$nhave_final += $$ref{factor};
-
 		if ( defined $$ref{final} ) { $nfinal{$$ref{move}} += $$ref{factor}; }
+		else                        { $not_final           += $$ref{factor}; } 
 	    }
 
-	    my $max = ( sort { $b <=> $a } values %nfinal )[0];
-
-	    if ( defined $max and $nhave_final < $max * 2 ) { $condition = 1; }
+	    my ( $first, $second ) = sort { $b <=> $a } values %nfinal;
+	    if ( defined $first ) {
+		$second = 0.0 unless defined $second;
+		$second += $not_final;
+		
+		if ( $first >= $second + $not_final ) { $condition = 1; }
+	    }
 	}
 	
 	if ( $condition ) {
@@ -605,7 +578,8 @@ sub set_times ($$) {
 	$sec_left = $$ref_status{sec_limit} - $$ref_status{sec_mytime};
 	if ( $sec_left < 0 ) { $sec_left = 0; }
 
-	$sec_fine = int( $sec_left / tc_nmove + 0.5 ) - $sec_ponder;
+	$sec_fine = int( $$ref_status{sec_limit} / tc_nmove + 0.5 )
+	    - $sec_ponder;
 	if ( $sec_fine < 0 ) { $sec_fine = 0; }
 
 	# t = 2s is not beneficial since 2.8s are almost the same as 1.8s.
@@ -668,10 +642,9 @@ sub clean_up_moves ($$) {
     my ( $ref_status, $ref_sckt_clients ) = @_;
 
     delete $$ref_status{boxes};
-    delete $$ref_status{boxes_book};
     foreach my $sckt ( @$ref_sckt_clients ) {
 	my $ref = $$ref_status{$sckt};
-	delete @$ref{ qw(move book stable final confident) };
+	delete @$ref{ qw(move stable final confident) };
     }
 }
 
