@@ -60,7 +60,7 @@ sub keep_alive      () { 180.0 }
 		       time_stable_min  => 2.0,
 		       buf_csa          => "" );
 
-    # parse the command-line options
+    # parse command-line options
     GetOptions( \%status,
 		'client_port=i',
 		'client_num=i',
@@ -113,7 +113,7 @@ sub play_a_game ($$$$$) {
     $$ref_status{pid}            = 0;
     $$ref_status{move_ponder}    = "";
 
-    # initialize the Shogi board of clients 
+    # initialize Shogi board of clients 
     out_clients $ref_sckt_clients, $fh_log, "new";
 
     $$ref_status{time}           = time;
@@ -145,7 +145,7 @@ sub play_a_game ($$$$$) {
       if ( defined $sckt ) {
 	  if ( $sckt == $sckt_csa ) {
 	  
-	      # received a message from the server
+	      # received a message from server
 	      last unless parse_smsg( $ref_status, $ref_sckt_clients,
 				      $fh_record, $fh_log );
 	      
@@ -156,7 +156,7 @@ sub play_a_game ($$$$$) {
 	  }
       }
 
-      # confer with client's opinions to make a move or pondering-move
+      # look at client's opinions to make a move or pondering-move
       move_selection $ref_status, $ref_sckt_clients, $sckt_csa, $fh_log;
   }
 
@@ -190,7 +190,7 @@ sub parse_smsg ($$$$) {
     if ( $$ref_status{phase} == phase_thinking ) { die "$!"; }
     elsif ( $color eq $$ref_status{color} ) {
 
-	# received time information from the server, continue puzzling.
+	# received time information from server, continue puzzling.
 	$$ref_status{sec_mytime} += $sec;
 	$$ref_status{timeout}     = min_timeout;
 	out_record $fh_record, $line;
@@ -288,7 +288,12 @@ sub parse_cmsg ($$$$) {
 	return;
     }
 
+    # ignore delayed message
     if ( $1 != $$ref_status{pid} ) { return; }
+
+    # ignore %TORYO move in puzzling phase
+    if ( $line =~ /move=(%TORYO)/
+	 and $$ref_status{phase} == phase_puzzling ) { return; }
     
     my $move      = undef;
     my $nodes     = undef;
@@ -296,9 +301,9 @@ sub parse_cmsg ($$$$) {
     my $final     = undef;
     my $confident = undef;
 
+
+    if ( $line =~ /move=(%TORYO)/ )          { $move      = $1; }
     if ( $line =~ /move=(\d\d\d\d\w\w)/ )    { $move      = $1; }
-    if ( $line =~ /move=(%TORYO)/
-	 and $$ref_status{phase} != phase_puzzling ) { $move = $1; }
     if ( $line =~ /n=(\d+)/ )                { $nodes     = $1; }
     if ( $line =~ /stable/ ) {
 	if ( defined $$ref{have_stable} )    { $stable    = 1; }
@@ -406,7 +411,7 @@ sub move_selection ($$$$) {
 	my $ref_boxes   = $$ref_status{boxes};
 	my $ops         = $$ref_boxes[0];
 	my $op          = $$ops[1];
-	my $nop         = @$ops - 1; # minus 1 because 1st element is factor
+	my $nop         = @$ops - 1; # "-1" to ignore the 1st element
 	my $nvalid      = $$ref_status{nvalid};
 	my $condition   = 0;
 	my $sec_elapsed;
@@ -451,7 +456,8 @@ sub move_selection ($$$$) {
 
 	# check stable
 	if ( not $condition
-	     and $$ref_status{time_stable_min} < $time_think + $$ref_status{time_response} ) {
+	     and ( $$ref_status{time_stable_min}
+		   < $time_think + $$ref_status{time_response} ) ) {
 
 	    my $nhave_stable = 0;
 	    my $nstable      = 0;
@@ -569,26 +575,26 @@ sub set_times ($$) {
     my $sec_ponder = int $$ref_status{start_turn} - $$ref_status{start_think};
 
     # set $sec_max and $sec_fine
-    #    $sec_max  - maximum allowed time-consumption to think
-    #    $sec_fine - fine time-consumption to think
-    #    $sec_easy - time-consumption to think an easy move
+    #    $sec_max  - maximum allowed time-consumption
+    #    $sec_fine - normal time consumption
+    #    $sec_easy - short time consumption
+    $sec_left = $$ref_status{sec_limit} - $$ref_status{sec_mytime};
+
     if ( $$ref_status{sec_limit_up} ) {
 
 	# have byo-yomi
-	$sec_left = $$ref_status{sec_limit} - $$ref_status{sec_mytime};
 	if ( $sec_left < 0 ) { $sec_left = 0; }
 
-	$sec_fine = int( $$ref_status{sec_limit} / tc_nmove + 0.5 )
-	    - $sec_ponder;
+	$sec_fine = int( $$ref_status{sec_limit} / tc_nmove + 0.5 ) - $sec_ponder;
 	if ( $sec_fine < 0 ) { $sec_fine = 0; }
 
 	# t = 2s is not beneficial since 2.8s are almost the same as 1.8s.
-        # So that, we rather want to use up the ordinary time.
+        # So that we rather want to use up the ordinary time.
 	if ( $sec_fine < 3 ) { $sec_fine = 3; }
 
 	# 'byo-yomi' is so long that the ordinary time-limit is negligible.
-	if ( $sec_fine < $$ref_status{sec_limit_up} * 1.0 ) {
-	    $sec_fine = int( $$ref_status{sec_limit_up} * 1.0 );
+	if ( $sec_fine < $$ref_status{sec_limit_up} * 2.0 ) {
+	    $sec_fine = int( $$ref_status{sec_limit_up} * 2.0 );
 	}
 
 	$sec_max  = $sec_fine * 3;
@@ -598,12 +604,12 @@ sub set_times ($$) {
 
 	# no byo-yomi
 	if ( $$ref_status{sec_mytime}+sec_margin < $$ref_status{sec_limit} ) {
-	    $sec_left = $$ref_status{sec_limit} - $$ref_status{sec_mytime};
+
 	    $sec_fine = int( $sec_left / tc_nmove + 0.5 ) - $sec_ponder;
 	    if ( $sec_fine < 0 ) { $sec_fine = 0; }
 	    
 	    # t = 2s is not beneficial since 2.8s are almost the same as 1.8s.
-	    # So that, we rather want to save the time.
+	    # So that we rather want to save time.
 	    if ( $sec_fine < 3 ) { $sec_fine = 1; }
 	    $sec_max  = $sec_fine * 3;
 	    $sec_easy = int( $sec_fine / 3 + 0.5 );
@@ -717,7 +723,7 @@ sub open_log ($) {
 
 sub open_clients ($) {
     my ( $ref_status ) = @_;
-    my ( $selector, $sckt_listen, @sckt_clients );
+    my ( $selector, $sckt_listen, $line, @sckt_accepted );
 
 
     # creates a listening socket for my clients.
@@ -731,33 +737,70 @@ sub open_clients ($) {
     # wait for a certain number of clients connects to me.
     print "Wait for $$ref_status{client_num} clients connect to me ...\n";
     $selector = new IO::Select $sckt_listen;
-    
-    for ( my $n = 0; $n < $$ref_status{client_num}; $n++ ) {
 
-	$selector->can_read;
+    my $nclient = 0;
 
-	my $sckt = $sckt_listen->accept or die "acception failure: $!\n";
-	push @sckt_clients, $sckt;
+    while ( 1 ) {
 
-	my $line = <$sckt>;
-	out_client $sckt, "idle";
+	if ( $nclient == $$ref_status{client_num} ) { last; }
 
-	$line =~ s/\r?\n$//;
-	
-	my ( $id, $factor ) = split " ", "$line 1.0";
-	$$ref_status{$sckt} = { id => $id, factor => $factor, buf => "" };
+	foreach my $sckt_ready ( $selector->can_read ) {
 
-	$line =~ /stable/    and ${$$ref_status{$sckt}}{have_stable}    = 1;
-	$line =~ /final/     and ${$$ref_status{$sckt}}{have_final}     = 1;
-	$line =~ /confident/ and ${$$ref_status{$sckt}}{have_confident} = 1;
+	    if ( $sckt_ready == $sckt_listen ) {
+
+		# connect() from a client
+		my $sckt = $sckt_listen->accept or die "accept() failed: $!\n";
+		$selector->add( $sckt );
+		${$$ref_status{$sckt}}{buf}     = "";
+		${$$ref_status{$sckt}}{id}      = "a client";
+		${$$ref_status{$sckt}}{factor}  = 1.0;
+
+	    } else {
+
+		# recv messages from a client
+		my $ref = $$ref_status{$sckt_ready};
+
+		$sckt_ready->recv( $line, 65536 );
+		unless ( $line ) {
+		    # One client is down
+		    $nclient -= 1;
+
+		    warn "\nWARNING: connection to $$ref{id} is down. "
+			. "$nclient clients left.\n\n";
+		    
+		    @sckt_accepted = grep { $_ != $sckt_ready; } @sckt_accepted;
+
+		    delete $$ref_status{$sckt_ready};
+		    $selector->remove( $sckt_ready );
+		    $sckt_ready->close;
+		    next;
+		}
 
 
-	print "  $line is accepted\n";
+		$$ref{buf} .= $line;
+
+		if ( grep { $_ == $sckt_ready } @sckt_accepted ) { next; }
+		if ( index( $$ref{buf}, "\n" ) == -1 )           { next; }
+
+		# obtained a line from the client
+		$line = get_line \$$ref{buf};
+
+		( $$ref{id}, $$ref{factor} ) = split " ", $line;
+		$$ref{have_stable}           = 1 if $line =~ /stable/;
+		$$ref{have_final}            = 1 if $line =~ /final/;
+		$$ref{have_confident}        = 1 if $line =~ /confident/;
+
+		print "  $line is accepted\n";
+		push @sckt_accepted, $sckt_ready;
+		$nclient += 1;
+		out_client $sckt_ready, "idle";
+	    }
+	}
     }
 
     $sckt_listen->close;
 
-    return \@sckt_clients;
+    return \@sckt_accepted;
 }
 
 
@@ -927,12 +970,7 @@ sub in_csa_clients ($$$) {
 		. "$nclient clients left.\n\n";
 	    unless ( $nclient ) { die "$!"; }
 
-	    for ( $i = 0; $i < $nclient; $i++ ) {
-		if ( $$ref_sckt_clients[$i] == $sckt ) {
-		    $$ref_sckt_clients[$i] = $$ref_sckt_clients[-1];
-		}
-	    }
-	    pop @$ref_sckt_clients;
+	    @$ref_sckt_clients = grep { $_ != $sckt; } @$ref_sckt_clients;
 
 	    delete $$ref_status{$sckt};
 	    $selector->remove( $sckt );
