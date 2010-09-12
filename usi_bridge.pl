@@ -42,6 +42,8 @@ if ($logfile) {
 $| = 1;
 ### initialize
 sub connection_closed () { return ":connection closed:"; }
+sub type_server () { return "Server"; }
+sub type_client () { return "client"; }
 my $client = init_client($command);
 print STDERR "client is $client->{id}\n";
 my $client_name = $name || $client->{id};
@@ -85,6 +87,10 @@ CONNECT: while (1) {
       }
       if (my $line = read_line($client, 0.1)) {
 	handle_client_message($line, $status);
+	next;
+      }
+      if (time >= $server->{last_activity} + 90) {
+	write_line($server, "");
       }
     }
   }
@@ -350,22 +356,25 @@ sub read_line ($@) {
   }
   $line =~ s/\r?\n$//;
   print STDERR substr($object->{type}, 0, 1), "< $line\n"
-    if ($verbose || $object->{type} eq "Server" || $line !~ /^info/
+    if ($verbose || $object->{type} eq type_server || $line !~ /^info/
 	|| $line =~ /(pv|score|string)/);
+  $object->{last_activity} = time;
   return $line;
 }
 
 sub write_line ($$) {
   my ($object, $message) = @_;
   my $writer = $object->{writer};
-  print $writer $message, "\n";
+  my $ok = (print $writer $message, "\n");
   print STDERR substr($object->{type}, 0, 1), "> $message\n";
+  warn unless $ok;
+  $object->{last_activity} = time if $ok;
 }
 
 sub init_client ($)
 {
   my ($command) = @_;
-  my $client = { id=>"noname", type=>"client" };
+  my $client = { id=>"noname", type=>type_client };
   $client->{pid} = open2($client->{reader}, $client->{writer}, $command)
     || die "command execution failed";
   write_line($client, "usi");
@@ -381,7 +390,7 @@ sub init_client ($)
 
 sub init_server ($$) {
   my ($hostname, $port) = @_;
-  my $server = { type=>"Server" };
+  my $server = { type=>type_server };
   print STDERR "connect to $hostname:$port\n";
   while (1) {
     eval {
