@@ -48,7 +48,7 @@ my $client = init_client($command);
 print STDERR "client is $client->{id}\n";
 my $client_name = $name || $client->{id};
 $client_name =~ s/ /_/g;
-$client_name .= " ".$factor." final";
+$client_name .= " ".$factor." final confident";
 
 CONNECT: while (1) {
   my $server = init_server($hostname, $port);
@@ -237,6 +237,7 @@ sub start_search ($) {
   write_line($status->{client}, "go infinite");
   $status->{lastgo} = time;
   $status->{lastnodes} = 1;
+  $status->{confident} = -1;
 }
 
 sub handle_server_message ($$) {
@@ -301,6 +302,10 @@ sub valid_usi ($) {
 
 sub handle_client_message ($$) {
   my ($line, $status) = @_;
+  if ($line =~ /^info\s+string.*confident/) {
+    $status->{confident} = $status->{id};
+    return;
+  }
   if ($line =~ /^info /) {
     die "unknown syntax $line" unless (valid_usi($line));
     my $depth = ($line =~ /\s+depth\s+([0-9]+)/) && $1;
@@ -330,8 +335,11 @@ sub handle_client_message ($$) {
     die "unknown syntax $line" unless (valid_usi_move($move));
     $status->{bestmove} = $status->{id};
     my $csa = usi2csa($status, $move);
-    write_line($status->{server}, "pid=".$status->{id}." move=".$csa
-	       ." n=".$status->{lastnodes}." final") if $csa;
+    return unless $csa;
+    my $msg = "pid=".$status->{id}." move=".$csa
+	." n=".$status->{lastnodes}." final";
+    $msg .= " confident" if ($status->{confident} == $status->{id});
+    write_line($status->{server}, $msg);
   }
   else {
     warn "unknown message $line";
@@ -345,9 +353,12 @@ sub read_line ($@) {
     my $selector = new IO::Select($in);
     return undef unless $selector->can_read($timeout);
   }
-  my ($line, $char);
-  return connection_closed unless $in->sysread($char, 1);
-  $line = $char;
+  my $char;
+  unless ($in->sysread($char, 1)) {
+    die "usi client died" if ($object->{type} eq type_client);
+    return connection_closed;
+  }
+  my $line = $char;
   if ($char ne "\n") {
     while ($in->sysread($char, 1) == 1) {
       $line .= $char;
