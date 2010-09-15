@@ -289,7 +289,7 @@ sub valid_usi ($) {
     $line =~ s/\s+time\s+[0-9]+(\s|$)/ /g;
     $line =~ s/\s+seldepth\s+[0-9]+(\s|$)/ /g;
     $line =~ s/\s+depth\s+[0-9]+(\s|$)/ /g;
-    $line =~ s/\s+nodes\s+[0-9]+(\s|$)/ /g;
+    $line =~ s/\s+nodes\s+-?[0-9]+(\s|$)/ /g;
     $line =~ s/\s+nps\s+-?[0-9.]+(\s|$)/ /g;
     $line =~ s/\s+hashfull\s+[0-9]+(\s|$)/ /g;
     $line =~ s/\s+currmove\s+(([0-9][a-z]|[PLNSGBR]\*)[0-9][a-z]\+?|resign)(\s|$)/ /g;
@@ -436,5 +436,7 @@ sub unittest () {
   make_move($status, "77", "76", "FU");
   ($status->{board}->[81] eq '-') || die "unittest";
   # show($status);
+  valid_usi("info depth 17 score cp 413 nodes 1725037458 pv 5f5e 5d5e 3g4f 3b2b 4d5e 7d7e 4f4e P*5d 5e4f 2c3b 4e5f") || die "unittest";
+  valid_usi("info depth 17 score cp 413 nodes -1725037458 pv 5f5e 5d5e 3g4f 3b2b 4d5e 7d7e 4f4e P*5d 5e4f 2c3b 4e5f") || die "unittest negative node count";
 }
 
