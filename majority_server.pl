@@ -17,6 +17,7 @@ $| = 1;
 sub play_a_game      ($$$$$$);
 sub parse_smsg       ($$$$);
 sub parse_cmsg       ($$$$);
+sub parse_clogin     ($$);
 sub print_opinions   ($$$);
 sub set_times        ($$);
 sub clean_up_moves   ($$);
@@ -25,9 +26,9 @@ sub get_line         ($);
 sub make_dir         ();
 sub open_record      ($$);
 sub open_log         ($);
-sub open_sockets     ($$$$$);
+sub open_sckts       ($$$$$);
 sub out_csa          ($$$$);
-sub hoge_hoge ($$$$);
+sub select_sckts     ($$$$);
 sub out_record       ($$) { print { $_[0] } "$_[1]\n" or die "$!"; }
 sub out_log          ($$) { print { $_[0] } "$_[1]\n" or die "$!"; }
 sub out_client       ($$) { print { $_[0] } "$_[1]\n" or die "$!"; }
@@ -55,7 +56,8 @@ sub keep_alive      () { 180.0 }
 		       sec_limit_up     => 120,
 		       time_response    => 0.2,
 		       time_stable_min  => 2.0,
-		       buf_csa          => "",
+		       audio            => '',
+		       buf_csa          => '',
 		       buf_resume       => [] );
 
     # parse command-line options
@@ -69,7 +71,8 @@ sub keep_alive      () { 180.0 }
 		'sec_limit=i',
 		'sec_limit_up=i',
 		'time_response=f',
-		'time_stable_min=f' ) or die "$!";
+		'time_stable_min=f',
+		'audio!' ) or die "$!";
 
     # creates a listening socket for my clients.
     my $sckt_listen
@@ -87,8 +90,8 @@ sub keep_alive      () { 180.0 }
 	my $fh_log    = open_log $basename;
 
 	# open clients, CSA Shogi server, and receive GAME_SUMMARY.
-	my $sckt_csa  = open_sockets( \%status, $sckt_listen, \@sckt_clients,
-				      \@game_summary, $fh_log );
+	my $sckt_csa  = open_sckts( \%status, $sckt_listen, \@sckt_clients,
+				    \@game_summary, $fh_log );
 
 
 	my $fh_record = open_record \%status, $basename;
@@ -113,16 +116,8 @@ sub play_a_game ($$$$$$) {
     # initialization of variables
     clean_up_moves $ref_status, $ref_sckt_clients;
 
-    $$ref_status{sec_mytime}     = 0;
-    $$ref_status{sec_optime}     = 0;
     $$ref_status{timeout}        = max_timeout;
-    $$ref_status{pid}            = 0;
     $$ref_status{move_ponder}    = "";
-
-    # initialize Shogi board of clients 
-    $$ref_status{buf_resume}     = [];
-    out_clients $ref_status, $ref_sckt_clients, $fh_log, "new";
-
     $$ref_status{time}           = time;
     $$ref_status{start_turn}     = $$ref_status{time};
     $$ref_status{start_think}    = $$ref_status{time};
@@ -137,8 +132,8 @@ sub play_a_game ($$$$$$) {
   LOOP: while ( 1 ) {
 
       # block until handles are ready to be read, or timeout
-      my ( @sckts ) = hoge_hoge( $sckt_listen, $sckt_csa, $ref_status,
-				 $ref_sckt_clients );
+      my ( @sckts ) = select_sckts( $sckt_listen, $sckt_csa, $ref_status,
+				    $ref_sckt_clients );
       # set current time
       $$ref_status{time} = time;
       
@@ -151,22 +146,6 @@ sub play_a_game ($$$$$$) {
       
       foreach my $sckt ( @sckts ) {
 
-	  if ( $sckt == $sckt_listen ) {
-	      
-	      # connect() from a client
-	      my $sckt = $sckt_listen->accept
-		  or die "accept() failed: $!\n";
-	      
-	      push @$ref_sckt_clients, $sckt;
-	      ${$$ref_status{$sckt}}{buf}    = "";
-	      ${$$ref_status{$sckt}}{id}     = "no-name";
-	      ${$$ref_status{$sckt}}{factor} = 1.0;
-	      foreach my $line ( @{$$ref_status{buf_resume}} ) {
-		  out_client $sckt, $line;
-	      }
-	      next;
-	  }
-	  
 	  if ( $sckt == $sckt_csa ) {
 	      
 	      # received a message from server
@@ -219,13 +198,13 @@ sub parse_smsg ($$$$) {
 	$$ref_status{timeout}     = min_timeout;
 	out_record $fh_record, $line;
 	out_log $fh_log, "Time: ${sec}s / $$ref_status{sec_mytime}s.\n";
-	out_log $fh_log, "Opponent's turn started.";
+	out_log $fh_log, "Opponent's turn starts.";
 	set_times $ref_status, $fh_log;
 
     } elsif ( $$ref_status{phase} == phase_pondering
 	      and $$ref_status{move_ponder} eq $move ) {
 	    
-	# received opp's move, pondering hit and my turn started.
+	# received opp's move, pondering hit and my turn starts.
 	my $time_think = $$ref_status{time}-$$ref_status{start_think};
 
 	$$ref_status{sec_optime} += $sec;
@@ -233,7 +212,7 @@ sub parse_smsg ($$$$) {
 	out_log $fh_log, "Opponent made a move $line.";
 	out_log $fh_log, "Time: ${sec}s / $$ref_status{sec_optime}s.";
 	out_log $fh_log, sprintf( "Pondering hit! (%.2fs)\n", $time_think );
-	out_log $fh_log, "My turn started.";
+	out_log $fh_log, "My turn starts.";
 
 	$$ref_status{start_turn}  = $$ref_status{time};
 	$$ref_status{phase}       = phase_thinking;
@@ -243,7 +222,7 @@ sub parse_smsg ($$$$) {
 
     } elsif ( $$ref_status{phase} == phase_pondering ) {
 	    
-	# received opp's move, pondering failed, my turn started.
+	# received opp's move, pondering failed, my turn starts.
 	$$ref_status{pid} += 1;
 	out_clients( $ref_status, $ref_sckt_clients, $fh_log,
 		     "alter $move $$ref_status{pid}" );
@@ -253,7 +232,7 @@ sub parse_smsg ($$$$) {
 	out_log $fh_log, "pid is set to $$ref_status{pid}.";
 	out_log $fh_log, "Opponent made an unexpected move $line.";
 	out_log $fh_log, "Time: ${sec}s / $$ref_status{sec_optime}s.\n";
-	out_log $fh_log, "My turn started.";
+	out_log $fh_log, "My turn starts.";
 
 	$$ref_status{start_turn}   = $$ref_status{time};
 	$$ref_status{start_think}  = $$ref_status{time};
@@ -266,7 +245,7 @@ sub parse_smsg ($$$$) {
 
     } else {
 
-	# received opp's move while puzzling, my turn started.
+	# received opp's move while puzzling, my turn starts.
 	$$ref_status{pid} += 1;
 	out_clients( $ref_status, $ref_sckt_clients, $fh_log,
 		     "move $move $$ref_status{pid}" );
@@ -276,7 +255,7 @@ sub parse_smsg ($$$$) {
 	out_log $fh_log, "pid is set to $$ref_status{pid}.";
 	out_log $fh_log, "Opponent made a move $line while puzzling.";
 	out_log $fh_log, "Time: ${sec}s / $$ref_status{sec_optime}s.\n";
-	out_log $fh_log, "My turn started.";
+	out_log $fh_log, "My turn starts.";
 	
 	$$ref_status{start_turn}   = $$ref_status{time};
 	$$ref_status{start_think}  = $$ref_status{time};
@@ -300,15 +279,7 @@ sub parse_cmsg ($$$$) {
 
     unless ( $$ref{login} ) {
 
-	# obtained a line from the client
-	( $$ref{id}, $$ref{factor} ) = split " ", $line;
-	$$ref{login}                 = 1;
-	$$ref{resume}                = 1;
-	$$ref{have_stable}           = 1 if $line =~ /stable/;
-	$$ref{have_final}            = 1 if $line =~ /final/;
-	$$ref{have_confident}        = 1 if $line =~ /confident/;
-	
-	print "  $line is accepted\n";
+	parse_clogin $ref, $line;
 	return;
     }
 
@@ -574,8 +545,10 @@ sub move_selection ($$$$) {
 	
     # Make a move, and start puzzling.
     $$ref_status{pid} += 1;
-    my $csa_move = (($move_ready !~ /^%/) ? $$ref_status{color} : "").$move_ready;
+    my $csa_move = ( $move_ready !~ /^%/) ? $$ref_status{color} : "";
+    $csa_move .= $move_ready;
     out_csa $ref_status, $sckt_csa, $fh_log, $csa_move;
+    if ( $$ref_status{audio} ) { print "\a"; }
     if ( $move_ready !~ /^%/ ) {
       out_clients( $ref_status, $ref_sckt_clients, $fh_log,
 		   "move $move_ready $$ref_status{pid}" );
@@ -764,7 +737,7 @@ sub open_log ($) {
 }
 
 
-sub open_sockets ($$$$$) {
+sub open_sckts ($$$$$) {
     my ( $ref_status, $sckt_listen, $ref_sckt_clients,
 	 $ref_game_summary, $fh_log ) = @_;
     my ( $selector, $sckt_csa );
@@ -812,22 +785,8 @@ sub open_sockets ($$$$$) {
 	    } else { warn "$!"; }
 	}
 
-	foreach my $sckt ( hoge_hoge( $sckt_listen, $sckt_csa, $ref_status,
-				      $ref_sckt_clients ) ) {
-
-	    if ( $sckt == $sckt_listen ) {
-		
-		# connect() from a client
-		my $sckt = $sckt_listen->accept
-		    or die "accept() failed: $!\n";
-		
-		push @$ref_sckt_clients, $sckt;
-		${$$ref_status{$sckt}}{buf}    = "";
-		${$$ref_status{$sckt}}{id}     = "no-name";
-		${$$ref_status{$sckt}}{factor} = 1.0;
-		out_client $sckt, "idle";
-		next;
-	    }
+	foreach my $sckt ( select_sckts( $sckt_listen, $sckt_csa, $ref_status,
+					 $ref_sckt_clients ) ) {
 
 	    if ( grep { $sckt == $_ } @$ref_sckt_clients ) {
 
@@ -836,14 +795,7 @@ sub open_sockets ($$$$$) {
 		my $line = get_line \$$ref{buf};
 		if ( $$ref{login} ) { next; }
 		
-		# obtained a line from the client
-		( $$ref{id}, $$ref{factor} ) = split " ", $line;
-		$$ref{login}                 = 1;
-		$$ref{have_stable}           = 1 if $line =~ /stable/;
-		$$ref{have_final}            = 1 if $line =~ /final/;
-		$$ref{have_confident}        = 1 if $line =~ /confident/;
-		
-		print "  $line is accepted\n";
+		parse_clogin $ref, $line;
 		next;
 	    }
 
@@ -856,7 +808,7 @@ sub open_sockets ($$$$$) {
 	    if ( $line =~ /^LOGIN:$$ref_status{csa_id} OK$/ ) { next; }
 	    
 	    if ( $line =~ /^BEGIN Game_Summary/ ) { next; }
-	    
+
 	    if ( $line =~ /^END Game_Summary$/ ) {
 		out_csa $ref_status, $sckt_csa, $fh_log, "AGREE";
 		next;
@@ -877,20 +829,44 @@ sub open_sockets ($$$$$) {
     }
 
     # parse massages of the game summary from the CSA Shogi server
-    $$ref_status{name1} = "";
-    $$ref_status{name2} = "";
-    $$ref_status{color} = '+';
-    $$ref_status{phase} = phase_puzzling;
+    my ( %sec_spent ) = ( '+' => 0, '-' => 0 );
+    my $color_last    = '-';
+
+    $$ref_status{pid}        = 0;
+    $$ref_status{name1}      = "";
+    $$ref_status{name2}      = "";
+    $$ref_status{color}      = '+';
+    $$ref_status{phase}      = phase_puzzling;
+    $$ref_status{sec_mytime} = 0;
+    $$ref_status{sec_optime} = 0;
+    $$ref_status{buf_resume} = [];
+    out_clients $ref_status, $ref_sckt_clients, $fh_log, "new";
+
 
     foreach my $line ( @$ref_game_summary ) {
 
-	if ( $line =~ /^Your_Turn\:([+-])\s*$/ ) {
-
-	    $$ref_status{color} = $1;
-	    if ( $1 eq '+' ) { $$ref_status{phase} = phase_thinking; }
+	if ( $line =~ /^Your_Turn\:([+-])\s*$/ ) { $$ref_status{color} = $1; }
+	elsif ( $line =~ /^([+-])(\d\d\d\d\w\w),T(\d+)/ ) {
+	    $$ref_status{pid} += 1;
+	    $sec_spent{$1}    += $3;
+	    $color_last        = $1;
+	    out_clients( $ref_status, $ref_sckt_clients, $fh_log,
+			 "move $2 $$ref_status{pid}" );
 	}
 	elsif ( $line =~ /^Name\+\:(\w+)/ ) { $$ref_status{name1} = $1; }
 	elsif ( $line =~ /^Name\-\:(\w+)/ ) { $$ref_status{name2} = $1; }
+    }
+
+    if ( $$ref_status{color} eq $color_last ) {
+
+	$$ref_status{sec_mytime} = $sec_spent{'-'};
+	$$ref_status{sec_optime} = $sec_spent{'+'};
+
+    } else {
+	
+	$$ref_status{phase}      = phase_thinking;
+	$$ref_status{sec_mytime} = $sec_spent{'+'};
+	$$ref_status{sec_optime} = $sec_spent{'-'};
     }
 
     return $sckt_csa;
@@ -916,7 +892,7 @@ sub out_clients ($$$$) {
 
 
 
-sub hoge_hoge ($$$$) {
+sub select_sckts ($$$$) {
     my ( $sckt_listen, $sckt_csa, $ref_status, $ref_sckt_clients ) = @_;
     my ( @sckt_ready );
 
@@ -935,16 +911,24 @@ sub hoge_hoge ($$$$) {
 	= new IO::Select $sckt_listen, $sckt_csa, @$ref_sckt_clients;
 
     foreach my $sckt ( $selector->can_read( $$ref_status{timeout} ) ) {
-	my $ref = $$ref_status{$sckt};
-	my $input;
 
 	if ( $sckt == $sckt_listen ) {
 
-	    # message arrived from listening socket
-	    push @sckt_ready, $sckt;
+	    # connect() from a client
+	    my $sckt = $sckt_listen->accept
+		or die "accept() failed: $!\n";
+	      
+	    push @$ref_sckt_clients, $sckt;
+	    ${$$ref_status{$sckt}}{buf}    = "";
+	    ${$$ref_status{$sckt}}{id}     = "no-name";
+	    ${$$ref_status{$sckt}}{factor} = 1.0;
+	    foreach my $line ( @{$$ref_status{buf_resume}} ) {
+		out_client $sckt, $line;
+	    }
 	    next;
 	}
 
+	my $input;
 	if ( $sckt_csa and $sckt == $sckt_csa ) {
 
 	    # message arrived from CSA Shogi server
@@ -956,6 +940,8 @@ sub hoge_hoge ($$$$) {
 	}
 
 	# message arrived from a client
+	my $ref = $$ref_status{$sckt};
+
 	$sckt->recv( $input, 65536 );
 	unless ( $input ) {
 	    # One client is down
@@ -985,6 +971,19 @@ sub hoge_hoge ($$$$) {
     }
 
     return @sckt_ready;
+}
+
+
+sub parse_clogin ($$) {
+    my ( $ref, $line ) = @_;
+
+    ( $$ref{id}, $$ref{factor} ) = split " ", $line;
+    $$ref{login}                 = 1;
+    $$ref{have_stable}           = 1 if $line =~ /stable/;
+    $$ref{have_final}            = 1 if $line =~ /final/;
+    $$ref{have_confident}        = 1 if $line =~ /confident/;
+		
+    print "  $line is accepted\n";
 }
 
 
