@@ -38,7 +38,7 @@ sub out_clients      ($$$$);
 sub phase_thinking  () { 0 }
 sub phase_puzzling  () { 1 }
 sub phase_pondering () { 2 }
-sub tc_nmove        () { 29 }
+sub tc_nmove        () { 40 }
 sub sec_margin      () { 15 }
 sub min_timeout     () { 0.05 }
 sub max_timeout     () { 1.0 }
@@ -52,12 +52,15 @@ sub keep_alive      () { 180.0 }
 		       csa_port         => 4081,
 		       csa_id           => 'majority_vote',
 		       csa_pw           => 'hoge-500-3',
-		       sec_limit        => 0,
-		       sec_limit_up     => 120,
+		       sec_limit        => 600,
+		       sec_limit_up     => 60,
 		       time_response    => 0.2,
 		       time_stable_min  => 2.0,
+		       sec_spent_b      => 0,
+		       sec_spent_w      => 0,
 		       audio            => '',
 		       buf_csa          => '',
+		       buf_record       => [],
 		       buf_resume       => [] );
 
     # parse command-line options
@@ -70,6 +73,8 @@ sub keep_alive      () { 180.0 }
 		'csa_pw=s',
 		'sec_limit=i',
 		'sec_limit_up=i',
+		'sec_spent_b=i',
+		'sec_spent_w=i',
 		'time_response=f',
 		'time_stable_min=f',
 		'audio!' ) or die "$!";
@@ -721,6 +726,9 @@ sub open_record ($$) {
     out_record $fh_record, "N-$$ref_status{name2}";
     out_record $fh_record, "PI";
     out_record $fh_record, "+";
+    foreach my $line ( @{$$ref_status{buf_record}} ) {
+	out_record $fh_record, $line;
+    }
 
     return $fh_record;
 }
@@ -829,7 +837,6 @@ sub open_sckts ($$$$$) {
     }
 
     # parse massages of the game summary from the CSA Shogi server
-    my ( %sec_spent ) = ( '+' => 0, '-' => 0 );
     my $color_last    = '-';
 
     $$ref_status{pid}        = 0;
@@ -839,6 +846,7 @@ sub open_sckts ($$$$$) {
     $$ref_status{phase}      = phase_puzzling;
     $$ref_status{sec_mytime} = 0;
     $$ref_status{sec_optime} = 0;
+    $$ref_status{buf_record} = [];
     $$ref_status{buf_resume} = [];
     out_clients $ref_status, $ref_sckt_clients, $fh_log, "new";
 
@@ -847,9 +855,9 @@ sub open_sckts ($$$$$) {
 
 	if ( $line =~ /^Your_Turn\:([+-])\s*$/ ) { $$ref_status{color} = $1; }
 	elsif ( $line =~ /^([+-])(\d\d\d\d\w\w),T(\d+)/ ) {
-	    $$ref_status{pid} += 1;
-	    $sec_spent{$1}    += $3;
-	    $color_last        = $1;
+	    push @{$$ref_status{buf_record}}, "$1$2,T$3";
+	    $$ref_status{pid}        += 1;
+	    $color_last               = $1;
 	    out_clients( $ref_status, $ref_sckt_clients, $fh_log,
 			 "move $2 $$ref_status{pid}" );
 	}
@@ -857,16 +865,20 @@ sub open_sckts ($$$$$) {
 	elsif ( $line =~ /^Name\-\:(\w+)/ ) { $$ref_status{name2} = $1; }
     }
 
-    if ( $$ref_status{color} eq $color_last ) {
+    if ( not $$ref_status{color} eq $color_last ) {
+	
+	$$ref_status{phase} = phase_thinking;
+    }
 
-	$$ref_status{sec_mytime} = $sec_spent{'-'};
-	$$ref_status{sec_optime} = $sec_spent{'+'};
+    if ( $$ref_status{color} eq '+') {
+
+	$$ref_status{sec_mytime} = $$ref_status{sec_spent_b};
+	$$ref_status{sec_optime} = $$ref_status{sec_spent_w};
 
     } else {
-	
-	$$ref_status{phase}      = phase_thinking;
-	$$ref_status{sec_mytime} = $sec_spent{'+'};
-	$$ref_status{sec_optime} = $sec_spent{'-'};
+
+	$$ref_status{sec_mytime} = $$ref_status{sec_spent_w};
+	$$ref_status{sec_optime} = $$ref_status{sec_spent_b};
     }
 
     return $sckt_csa;
