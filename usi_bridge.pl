@@ -319,7 +319,7 @@ sub handle_client_message ($$) {
     $move = usi2csa($status, $move) if $move;
     my $message = "";
     $message .= " move=".$move if ($move);
-    # $message .= " v=".$score.'e' if $score;
+    $message .= " v=".$score.'e' if ($move && defined $score);
     if ($nodes) {
       $message .= " n=".$nodes;
       $status->{lastnodes} = $nodes;
