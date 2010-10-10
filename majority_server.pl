@@ -38,7 +38,7 @@ sub out_clients      ($$$$);
 sub phase_thinking  () { 0 }
 sub phase_puzzling  () { 1 }
 sub phase_pondering () { 2 }
-sub tc_nmove        () { 40 }
+sub tc_nmove        () { 33 }
 sub sec_margin      () { 15 }
 sub min_timeout     () { 0.05 }
 sub max_timeout     () { 1.0 }
@@ -625,8 +625,8 @@ sub set_times ($$) {
 	    $sec_fine = int( $$ref_status{sec_limit_up} * 2.0 );
 	}
 
-	$sec_max  = $sec_fine * 3;
-	$sec_easy = int( $sec_fine / 3 + 0.5 );
+	$sec_max  = $sec_fine * 2;
+	$sec_easy = int( $sec_fine / 2 + 0.5 );
 
     } else {
 
@@ -639,8 +639,8 @@ sub set_times ($$) {
 	    # t = 2s is not beneficial since 2.8s are almost the same as 1.8s.
 	    # So that we rather want to save time.
 	    if ( $sec_fine < 3 ) { $sec_fine = 1; }
-	    $sec_max  = $sec_fine * 3;
-	    $sec_easy = int( $sec_fine / 3 + 0.5 );
+	    $sec_max  = $sec_fine * 2;
+	    $sec_easy = int( $sec_fine / 2 + 0.5 );
 
 	} else { $sec_fine = $sec_max = 1; }
     }
