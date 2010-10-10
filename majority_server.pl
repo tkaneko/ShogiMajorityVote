@@ -51,7 +51,7 @@ sub keep_alive      () { 180.0 }
 		       csa_host         => 'localhost',
 		       csa_port         => 4081,
 		       csa_id           => 'majority_vote',
-		       csa_pw           => 'hoge-500-3',
+		       csa_pw           => 'hoge-500-3-W',
 		       sec_limit        => 600,
 		       sec_limit_up     => 60,
 		       time_response    => 0.2,
@@ -313,6 +313,7 @@ sub parse_cmsg ($$$$) {
     
     my $move      = undef;
     my $nodes     = undef;
+    my $value     = undef;
     my $stable    = undef;
     my $final     = undef;
     my $confident = undef;
@@ -320,6 +321,7 @@ sub parse_cmsg ($$$$) {
 
     if ( $line =~ /move=(%TORYO)/ )          { $move      = $1; }
     if ( $line =~ /move=(\d\d\d\d\w\w)/ )    { $move      = $1; }
+    if ( $line =~ /v=(\d+)/ )                { $value     = $1; }
     if ( $line =~ /n=(\d+)/ )                { $nodes     = $1; }
     if ( $line =~ /stable/ ) {
 	if ( defined $$ref{have_stable} )    { $stable    = 1; }
@@ -343,26 +345,31 @@ sub parse_cmsg ($$$$) {
 	$$ref{move}      = $move;
 	$$ref{nodes}     = $nodes;
 	$$ref{spent}     = $time_think;
+	if ( defined $value ) { $$ref{value} = $value; }
 
     } elsif ( defined $final and defined $$ref{move} ) {
 
 	$$ref{final}     = $final;
 	$$ref{spent}     = $time_think;
+	if ( defined $value ) { $$ref{value} = $value; }
 
     } elsif ( defined $stable and defined $$ref{move} ) {
 
 	$$ref{stable}    = $stable;
 	$$ref{spent}     = $time_think;
+	if ( defined $value ) { $$ref{value} = $value; }
 
     } elsif ( defined $confident and defined $$ref{move} ) {
 
 	$$ref{confident} = $confident;
 	$$ref{spent}     = $time_think;
+	if ( defined $value ) { $$ref{value} = $value; }
 
     } elsif ( defined $nodes and defined $$ref{move} ) {
 
 	$$ref{nodes}     = $nodes;
 	$$ref{spent}     = $time_think;
+	if ( defined $value ) { $$ref{value} = $value; }
 
     } else { warn "Invalid message from $$ref{id}: $line\n"; }
 
@@ -533,11 +540,13 @@ sub move_selection ($$$$) {
 	      
 	# Make a move, and ponering start.
 	$$ref_status{pid} += 1;
+	my $color = ( $$ref_status{color} eq '+' ) ? '-' : '+';
+
 	out_clients( $ref_status, $ref_sckt_clients, $fh_log,
 		     "move $move_ready $$ref_status{pid}" );
 	    
 	out_log $fh_log, "pid is set to $$ref_status{pid}.";
-	out_log $fh_log, "Ponder on $$ref_status{color}$move_ready.";
+	out_log $fh_log, "Ponder on $color$move_ready.";
 	    
 	clean_up_moves $ref_status, $ref_sckt_clients;
 	$$ref_status{move_ponder}  = $move_ready;
@@ -669,7 +678,7 @@ sub clean_up_moves ($$) {
     delete $$ref_status{boxes};
     foreach my $sckt ( @$ref_sckt_clients ) {
 	my $ref = $$ref_status{$sckt};
-	delete @$ref{ qw(move stable final confident resume) };
+	delete @$ref{ qw(move stable final confident resume value) };
     }
 }
 
@@ -702,10 +711,11 @@ sub print_opinions ($$$) {
 	foreach my $op ( @ops_ ) {
 	    my $spent = $$op{spent} + 0.001;
 	    my $nps = $$op{nodes} / $spent / 1000.0;
-	    my $str = sprintf( "  %.2f %s nps=%6.1fK %6.1fs %s",
-			       $$op{factor}, $$op{move}, $nps,
-			       $$op{spent}, $$op{id} );
+	    my $str = sprintf( "  %.2f %s nps=%7.1fK %6.1fs %s",
+			       $$op{factor}, $$op{move}, $nps, $$op{spent},
+			       $$op{id} );
 
+	    if ( $$op{value} )  { $str .= " $$op{value}"; }
 	    if ( $$op{stable} ) { $str .= " stable"; }
 	    if ( $$op{final} )  { $str .= " final"; }
 	    if ( $$op{resume} ) { $str .= " resume"; }
